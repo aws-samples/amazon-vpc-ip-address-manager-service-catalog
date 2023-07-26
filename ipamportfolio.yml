@@ -1,0 +1,445 @@
+# Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
+# SPDX-License-Identifier: MIT-0
+
+Metadata:
+  'AWS::CloudFormation::Interface':
+    ParameterGroups:
+      - Label:
+          default: Organization & Account Details
+        Parameters:
+          - OrganizationID
+      - Label:
+          default: Service Catalog Configuration
+        Parameters:
+          - IPAMDelegateProductKey
+          - IPAMCloudFormationMacroProductKey
+          - IPAMProductKey
+          - IPAMSpokeProductKey
+          - Version
+
+Parameters :
+  OrganizationID:
+    Type: String
+    Description: AWS organization (Org) ID or Organization Unit (OU) id where the IPAM Portfolio needs to be shared
+    Default: 'o-'
+  IPAMDelegateProductKey:
+    Type: String
+    Description: The full S3 location where the IPAM Delegate product template is uploaded to.
+    Default: https://control-tower-storage-AccountId-us-west-2.s3.us-west-2.amazonaws.com/ipam-delegate.yml
+  IPAMCloudFormationMacroProductKey:
+    Type: String
+    Description: The full S3 location where the IPAM Macro product template is uploaded to.
+    Default: https://control-tower-storage-AccountId-us-west-2.s3.us-west-2.amazonaws.com/ipam-macro.yml
+  IPAMProductKey:
+    Type: String
+    Description: The full S3 location where the IPAM NetworkHub product template is uploaded to.
+    Default: https://control-tower-storage-AccountId-us-west-2.s3.us-west-2.amazonaws.com/ipam-product.yml
+  IPAMSpokeProductKey:
+    Type: String
+    Description: The full S3 location where the IPAM Spoke product template is uploaded to.
+    Default: https://control-tower-storage-AccountId-us-west-2.s3.us-west-2.amazonaws.com/ipam-spoke-product.yml
+  # IPAMSpokeProductLaunchConstraintRole:
+  #   Type: String
+  #   Description: The IAM Role that the end-users in Spoke Accounts should assume to launch the IPAM Spoke Product.
+  #   Default: IPAM Spoke Product Launch Constraint Role Name
+
+  Version:
+    Type: String
+    Description: Parameter to trigger the custom resource update. Please change this value every time you want to trigger the update logic of custom resource
+    Default: 1
+
+Resources:
+  ##### Portfolio Resources #####
+
+  IPAMSpokePortfolio:
+    Type: AWS::ServiceCatalog::Portfolio
+    Properties:
+      AcceptLanguage: en
+      Description: Portfolio for IPAM Spoke Product
+      DisplayName: "IPAM Spoke Portfolio"
+      ProviderName: AWS
+
+  IPAMMainPortfolio:
+    Type: AWS::ServiceCatalog::Portfolio
+    Properties:
+      AcceptLanguage: en
+      Description: Portfolio for IPAM Products
+      DisplayName: "IPAM Main Portfolio"
+      ProviderName: AWS
+
+##### Product Resources #####
+
+  IPAMDelegateProduct:
+    Type: AWS::ServiceCatalog::CloudFormationProduct
+    Properties:
+      AcceptLanguage: en
+      Description: This product delegates NetworkHub account as the delegated Admin. 
+      Distributor: AWS
+      Name: IPAM Delegate Product
+      Owner: AWS
+      ProvisioningArtifactParameters:
+        - Description: This is version 1.0 of the AWS IPAM Delegate Product.
+          Name: Version - 1.0
+          Info:
+            LoadTemplateFromURL: !Ref IPAMDelegateProductKey
+
+  IPAMCloudFormationMacroProduct:
+    Type: AWS::ServiceCatalog::CloudFormationProduct
+    Properties:
+      AcceptLanguage: en
+      Description: This product deploys a CloudFormation macro which processes the base IPAM template.
+      Distributor: AWS
+      Name: IPAM CloudFormation Macro Product
+      Owner: AWS
+      ProvisioningArtifactParameters:
+        - Description: This is version 1.0 of the AWS IPAM Macro Product.
+          Name: Version - 1.0
+          Info:
+            LoadTemplateFromURL: !Ref IPAMCloudFormationMacroProductKey
+
+  IPAMProduct:
+    Type: AWS::ServiceCatalog::CloudFormationProduct
+    Properties:
+      AcceptLanguage: en
+      Description: This product is used to launch and provision the IPAM Pools.
+      Distributor: AWS
+      Name: IPAM NetworkHub Product
+      Owner: AWS
+      ProvisioningArtifactParameters:
+        - Description: This is version 1.0 of the AWS IPAM NetworkHub Product product.
+          Name: Version - 1.0
+          Info:
+            LoadTemplateFromURL: !Ref IPAMProductKey
+
+  IPAMSpokeProduct:
+    Type: AWS::ServiceCatalog::CloudFormationProduct
+    Properties:
+      AcceptLanguage: en
+      Description: This product is used to launch and provision the VPC with CIDRs from created IPAM Pools
+      Distributor: AWS
+      Name: IPAM Spoke Product
+      Owner: AWS
+      ProvisioningArtifactParameters:
+        - Description: This is version 1.0 of the AWS IPAM Spoke Product.
+          Name: Version - 1.0
+          Info:
+            LoadTemplateFromURL: !Ref IPAMSpokeProductKey
+
+##### Portfolio / Product Associations ##### 
+  
+  IPAMDelegateProductAssociation:
+    Type: AWS::ServiceCatalog::PortfolioProductAssociation
+    Properties:
+      AcceptLanguage: en
+      PortfolioId: !Ref IPAMMainPortfolio
+      ProductId: !Ref IPAMDelegateProduct
+  
+  IPAMCloudFormationMacroProductAssociation:
+    Type: AWS::ServiceCatalog::PortfolioProductAssociation
+    Properties:
+      AcceptLanguage: en
+      PortfolioId: !Ref IPAMMainPortfolio
+      ProductId: !Ref IPAMCloudFormationMacroProduct
+  
+  IPAMProductAssociation:
+    Type: AWS::ServiceCatalog::PortfolioProductAssociation
+    Properties:
+      AcceptLanguage: en
+      PortfolioId: !Ref IPAMMainPortfolio
+      ProductId: !Ref IPAMProduct
+
+  IPAMSpokeProductAssociation:
+    Type: AWS::ServiceCatalog::PortfolioProductAssociation
+    Properties:
+      AcceptLanguage: en
+      PortfolioId: !Ref IPAMSpokePortfolio
+      ProductId: !Ref IPAMSpokeProduct
+
+##### Portfolio Share Lambda Custom Resource
+ 
+  #Lambda exec role
+  IPAMLambdaExecutionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      Description: Iam Role for Lambda Execution
+      Path: '/'
+      AssumeRolePolicyDocument: 
+        Version: '2012-10-17'
+        Statement:  
+        - Effect: Allow
+          Sid: ''
+          Principal:
+            Service: lambda.amazonaws.com
+          Action: sts:AssumeRole
+      ManagedPolicyArns:
+      - arn:aws:iam::aws:policy/AWSLambdaExecute
+      RoleName: ExecutionRoleForIPAMPortfolioShare
+      Policies:
+        - PolicyName: ExecutionPolicyForIPAMPortfolioShare
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action: 
+                  - 'ec2:*'
+                  - 'cloudwatch:*'
+                  - 'servicecatalog:*'
+                  - 'organizations:*'
+                Resource: '*'
+
+  # Lambda Function MainPortfolioShare
+  IPAMMainPortfolioShareLambda:
+    Type: AWS::Lambda::Function
+    Properties:
+      Description: Lambda Function to share the IPAM Service Catalogue Portfolio
+      FunctionName: IPAMMainPortfolioShareLambda
+      Handler: "index.lambda_handler"
+      MemorySize: 128
+      Timeout: 120
+      Role:
+        Fn::GetAtt:
+          - IPAMLambdaExecutionRole
+          - Arn
+      Runtime: python3.9
+      Environment:
+        Variables:
+          IPAMMainPortfolioId: !Ref IPAMMainPortfolio
+          OrganizationalUnit:
+            Ref: OrganizationID
+      Code:
+        ZipFile: |
+          import json
+          import boto3
+          import logging, sys, traceback
+          import urllib3
+          import os
+          import time
+          from os import path
+          http = urllib3.PoolManager()
+          from botocore.exceptions import ClientError
+          from urllib.parse import unquote
+          # Setting base-config for Logging
+          logger = logging.getLogger()
+          logger.setLevel(logging.INFO)
+          SUCCESS = "SUCCESS"
+          FAILED = "FAILED"
+          def sendResponse(event, context, responseStatus, responseData, reason=None, physical_resource_id=None):
+              responseBody = {'Status': responseStatus,
+                              'Reason': 'See the details in CloudWatch Log Stream: ' + context.log_stream_name,
+                              'PhysicalResourceId': physical_resource_id or context.log_stream_name,
+                              'StackId': event['StackId'],
+                              'RequestId': event['RequestId'],
+                              'LogicalResourceId': event['LogicalResourceId'],
+                              'Data': responseData}
+              print ('RESPONSE BODY:n' + json.dumps(responseBody))
+              responseUrl = event['ResponseURL']
+              json_responseBody = json.dumps(responseBody)
+              headers = {
+                  'content-type' : '',
+                  'content-length' : str(len(json_responseBody))
+              }
+              try:
+                  response = http.request('PUT', responseUrl, headers=headers, body=json_responseBody)
+                  #response = response.send(responseUrl, data=json_responseBody, headers=headers)
+                  print ("Status code: " +response.reason)
+              except Exception as e:
+                  print ("send(..) failed executing requests.put(..): " + str(e))
+          def lambda_handler(event,context):
+              client = boto3.client('servicecatalog')
+              ipam_main_portfolio_id  = (os.environ['IPAMMainPortfolioId'])
+              organizational_unit= (os.environ['OrganizationalUnit'])
+              try:
+                  if event['RequestType'] == 'Delete':
+                      logger.info("Received a Delete Request...")
+                      responseStatus = "SUCCESS"
+                      response = client.delete_portfolio_share(
+                          AcceptLanguage='en',
+                          PortfolioId=ipam_main_portfolio_id,
+                          OrganizationNode={
+                              'Type': 'ORGANIZATION',
+                              'Value': organizational_unit
+                          }
+                      )
+                      responseData = {}
+                  elif event['RequestType'] == 'Create':
+                      logger.info("Received a Create Request...")
+                      responseData = {}
+                      responseStatus = "SUCCESS"
+                      response = client.create_portfolio_share(
+                        AcceptLanguage='en',
+                        PortfolioId=ipam_main_portfolio_id,
+                        OrganizationNode={
+                            'Type': 'ORGANIZATION',
+                            'Value': organizational_unit
+                        },
+                        ShareTagOptions=True
+                        )
+                  elif event['RequestType'] == 'Update':
+                      logger.info("Received a Update Request...")
+                      responseData = {}
+                      responseStatus = "SUCCESS" 
+                      response = client.create_portfolio_share(
+                        AcceptLanguage='en',
+                        PortfolioId=ipam_main_portfolio_id,
+                        OrganizationNode={
+                            'Type': 'ORGANIZATION',
+                            'Value': organizational_unit
+                        },
+                        ShareTagOptions=True
+                        )                 
+              except Exception as exp:
+                  responseStatus = "FAILED"
+                  responseData = {}
+                  exception_type, exception_value, exception_traceback = sys.exc_info()
+                  traceback_string = traceback.format_exception(exception_type, exception_value, exception_traceback)
+                  err_msg = json.dumps({
+                      "errorType": exception_type.__name__,
+                      "errorMessage": str(exception_value),
+                      "stackTrace": traceback_string
+                  })
+                  logger.error(err_msg)
+              sendResponse(event, context, responseStatus, responseData) 
+
+  # Lambda Function SpokePortfolioShare
+  IPAMSpokePortfolioShareLambda:
+    Type: AWS::Lambda::Function
+    Properties:
+      Description: Lambda Function to share the IPAM Service Catalogue Portfolio
+      FunctionName: IPAMSpokePortfolioShareLambda
+      Handler: "index.lambda_handler"
+      MemorySize: 128
+      Timeout: 120
+      Role:
+        Fn::GetAtt:
+          - IPAMLambdaExecutionRole
+          - Arn
+      Runtime: python3.9
+      Environment:
+        Variables:
+          IPAMSpokePortfolioId: !Ref IPAMSpokePortfolio
+          OrganizationalUnit:
+            Ref: OrganizationID
+      Code:
+        ZipFile: |
+          import json
+          import boto3
+          import logging, sys, traceback
+          import urllib3
+          import os
+          import time
+          from os import path
+          http = urllib3.PoolManager()
+          from botocore.exceptions import ClientError
+          from urllib.parse import unquote
+          # Setting base-config for Logging
+          logger = logging.getLogger()
+          logger.setLevel(logging.INFO)
+          SUCCESS = "SUCCESS"
+          FAILED = "FAILED"
+          def sendResponse(event, context, responseStatus, responseData, reason=None, physical_resource_id=None):
+              responseBody = {'Status': responseStatus,
+                              'Reason': 'See the details in CloudWatch Log Stream: ' + context.log_stream_name,
+                              'PhysicalResourceId': physical_resource_id or context.log_stream_name,
+                              'StackId': event['StackId'],
+                              'RequestId': event['RequestId'],
+                              'LogicalResourceId': event['LogicalResourceId'],
+                              'Data': responseData}
+              print ('RESPONSE BODY:n' + json.dumps(responseBody))
+              responseUrl = event['ResponseURL']
+              json_responseBody = json.dumps(responseBody)
+              headers = {
+                  'content-type' : '',
+                  'content-length' : str(len(json_responseBody))
+              }
+              try:
+                  response = http.request('PUT', responseUrl, headers=headers, body=json_responseBody)
+                  #response = response.send(responseUrl, data=json_responseBody, headers=headers)
+                  print ("Status code: " +response.reason)
+              except Exception as e:
+                  print ("send(..) failed executing requests.put(..): " + str(e))
+          def lambda_handler(event,context):
+              client = boto3.client('servicecatalog')
+              ipam_spoke_portfolio_id  = (os.environ['IPAMSpokePortfolioId'])
+              organizational_unit= (os.environ['OrganizationalUnit'])
+              try:
+                  if event['RequestType'] == 'Delete':
+                      logger.info("Received a Delete Request...")
+                      responseStatus = "SUCCESS"
+                      response = client.delete_portfolio_share(
+                          AcceptLanguage='en',
+                          PortfolioId=ipam_spoke_portfolio_id,
+                          OrganizationNode={
+                              'Type': 'ORGANIZATION',
+                              'Value': organizational_unit
+                          }
+                      )
+                      responseData = {}
+                  elif event['RequestType'] == 'Create':
+                      logger.info("Received a Create Request...")
+                      responseData = {}
+                      responseStatus = "SUCCESS"
+                      response = client.create_portfolio_share(
+                        AcceptLanguage='en',
+                        PortfolioId=ipam_spoke_portfolio_id,
+                        OrganizationNode={
+                            'Type': 'ORGANIZATION',
+                            'Value': organizational_unit
+                        },
+                        ShareTagOptions=True
+                        )
+                  elif event['RequestType'] == 'Update':
+                      logger.info("Received a Update Request...")
+                      responseData = {}
+                      responseStatus = "SUCCESS" 
+                      response = client.create_portfolio_share(
+                        AcceptLanguage='en',
+                        PortfolioId=ipam_spoke_portfolio_id,
+                        OrganizationNode={
+                            'Type': 'ORGANIZATION',
+                            'Value': organizational_unit
+                        },
+                        ShareTagOptions=True
+                        )                 
+              except Exception as exp:
+                  responseStatus = "FAILED"
+                  responseData = {}
+                  exception_type, exception_value, exception_traceback = sys.exc_info()
+                  traceback_string = traceback.format_exception(exception_type, exception_value, exception_traceback)
+                  err_msg = json.dumps({
+                      "errorType": exception_type.__name__,
+                      "errorMessage": str(exception_value),
+                      "stackTrace": traceback_string
+                  })
+                  logger.error(err_msg)
+              sendResponse(event, context, responseStatus, responseData)  
+
+  IPAMMainPortfoliocustomresource:
+    Type: AWS::CloudFormation::CustomResource
+    DependsOn: 
+    - IPAMDelegateProductAssociation
+    - IPAMCloudFormationMacroProductAssociation
+    - IPAMProductAssociation
+    - IPAMSpokeProductAssociation
+    Properties:
+      ServiceToken: !GetAtt IPAMMainPortfolioShareLambda.Arn
+      DummyVersion: !Ref Version
+
+  IPAMSpokePortfoliocustomresource:
+    Type: AWS::CloudFormation::CustomResource
+    DependsOn: 
+    - IPAMSpokeProductAssociation
+    - IPAMMainPortfoliocustomresource
+    Properties:
+      ServiceToken: !GetAtt IPAMSpokePortfolioShareLambda.Arn
+      DummyVersion: !Ref Version
+
+  # IPAMSpokeProductLaunchRoleConstraint:
+  #   Type: AWS::ServiceCatalog::LaunchRoleConstraint
+  #   DependsOn:
+  #     - IPAMSpokeProductAssociation
+  #   Properties:
+  #     AcceptLanguage: en
+  #     LocalRoleName: !Ref IPAMSpokeProductLaunchConstraintRole  # This has to be updated based on your central IAM Role that is provisioned across all Spoke Accounts. 
+  #     Description: IPAM Spoke Product Launch Role Constraint. This allows the end user logged in with the provided role to launch the product. 
+  #     PortfolioId: !Ref IPAMSpokePortfolio
+  #     ProductId: !Ref IPAMSpokeProduct

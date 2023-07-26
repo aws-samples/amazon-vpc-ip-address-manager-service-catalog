@@ -1,0 +1,110 @@
+# Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
+# SPDX-License-Identifier: MIT-0
+
+AWSTemplateFormatVersion: '2010-09-09'
+Description: IPAM Pools
+Transform:
+  - Replication-IpamRegionalPool-Macro
+
+Parameters:
+  pOrgId:
+    Description: Id of organization
+    Type: String
+    Default: o-abcdefgh
+  pOperatingRegionList: 
+    Description: A list of AWS Regions where the IPAM is allowed to manage IP address CIDRs
+    Type: String
+    Default: "us-east-1,us-east-2"     
+  pMainPoolCIDRIPv4List:
+    Description: IPv4 CIDR provisioned to the main IPAM pool (TOP-LEVEL-POOL). 
+    Type: String
+    Default: "10.0.0.0/8"
+  pRegionalPool1CIDRIPv4List:
+    Description: The list of CIDRs for regional pools (one per region) provisioned from the main IPAM pool, given in order as pOperatingRegionList.  
+    Type: String
+    Default: "10.0.0.0/16,10.1.0.0/16"
+  pOperatingEnvironmentsList: 
+    Description: A list of Environments where the IPAM is allowed to manage IP address CIDRs
+    Type: String
+    # AllowedValues:
+    #   - "Prod"
+    #   - "NonProd"
+    Default: "Prod,NonProd"  
+  pPoolCIDRIPv4ListProd:
+    Description: The list of production pool CIDRs (one per region) provisioned from the respective regional IPAM pool, given in order as pOperatingRegionList. 
+    Type: String
+    Default: "10.0.192.0/18,10.1.192.0/18"
+  pPoolCIDRIPv4ListNonProd:
+    Description: The list of non-production pool CIDRs (one per region) provisioned from the respective regional IPAM pool, given in order as pOperatingRegionList. 
+    Type: String
+    Default: "10.0.64.0/18,10.1.64.0/18"
+
+Resources:
+
+  rIPAM:
+    Type: AWS::EC2::IPAM
+    Properties: 
+      Description: Organization IPAM
+      OperatingRegions:
+        ReplicateforMultipleRegions:
+          RegionName: 'pOperatingRegionList'
+
+  rIPAMScope:
+    Type: AWS::EC2::IPAMScope
+    Properties: 
+      Description: Custom Scope for Private IP Addresses
+      IpamId: !Ref rIPAM
+      IpamScopeType: private
+
+  rIPAMTOPPoolIPv4:
+    Type: AWS::EC2::IPAMPool
+    Properties: 
+      AddressFamily: ipv4
+      Description: TOP-LEVEL-POOL
+      IpamScopeId: !Ref rIPAMScope
+      ProvisionedCidrs: 
+        - Cidr: !Ref pMainPoolCIDRIPv4List
+      Tags:
+        - Key: "Name"
+          Value: "TOP-LEVEL-POOL" 
+
+  rIPAMPoolRegion:
+    Type: AWS::EC2::IPAMPool
+    Properties: 
+      AddressFamily: ipv4
+      Description: Regional IPAM Pool
+      IpamScopeId: !Ref rIPAMScope
+      ReplicateforMultipleRegions:
+        Locale: 'pOperatingRegionList'
+      SourceIpamPoolId: !Ref rIPAMTOPPoolIPv4  
+      ProvisionedCidrs: 
+        ReplicateforMultipleRegions:
+          - Cidr: 'pRegionalPool1CIDRIPv4List'
+
+  rIPAMPoolEnv:
+    Type: AWS::EC2::IPAMPool
+    Properties: 
+      AutoImport: yes
+      AddressFamily: ipv4
+      Description: IPAM Pool
+      IpamScopeId: !Ref rIPAMScope
+      ReplacewithLocale:
+        Locale: 'pOperatingRegionList'
+      ProvisionedCidrs: 
+        ReplicateforMultipleEnvironments:
+          - Cidr: 'pPoolCIDRIPv4List'
+      ReplaceWithRegionalPoolId:
+        SourceIpamPoolId: !Ref rIPAMPoolRegional1IPv4
+
+  rIPAMShare:
+    Type: "AWS::RAM::ResourceShare"
+    Properties:
+      Name: IPAM Share
+      ResourceArns:
+        ReplacewithResourceArn:
+          -  'rIPAMPool-Arn'
+      Principals:
+        - !Sub arn:aws:organizations::${pManagementAccountID}:organization/${pOrgId}
+      PermissionArns: 
+        - arn:aws:ram::aws:permission/AWSRAMDefaultPermissionsIpamPool        
+      AllowExternalPrincipals: false

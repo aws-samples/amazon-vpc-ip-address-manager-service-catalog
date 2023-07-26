@@ -1,0 +1,243 @@
+# Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
+# SPDX-License-Identifier: MIT-0
+
+AWSTemplateFormatVersion: 2010-09-09
+Resources:
+  rTransformExecutionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: 2012-10-17
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: [lambda.amazonaws.com]
+            Action: ['sts:AssumeRole']
+      Path: /
+      Policies:
+        - PolicyName: root-global
+          PolicyDocument:
+            Version: 2012-10-17
+            Statement:
+              - Effect: Allow
+                Action:
+                  - logs:CreateLogGroup
+                Resource:
+                  - !Sub 'arn:aws:logs:*:${AWS::AccountId}:log-group:*'
+              - Effect: Allow
+                Action:
+                  - logs:*
+                  # - logs:PutLogEvents
+                Resource:
+                  - !Sub 'arn:aws:logs:*:${AWS::AccountId}:log-group:*'
+  rTransformFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: replication-ipam-macro
+      Code:
+        ZipFile: |
+          import boto3
+          import copy
+          import json
+          import logging
+
+          log = logging.getLogger()
+          log.setLevel(logging.INFO)
+
+          REPLICATE_FOR_MULTIPLE_REGIONS = 'ReplicateforMultipleRegions'
+          REPLICATE_FOR_MULTIPLE_ENVIRONMENTS = 'ReplicateforMultipleEnvironments'
+          REGIONAL_POOL_ID = 'ReplaceWithRegionalPoolId'
+          REPLACE_WITH_LOCALE = 'ReplacewithLocale'
+          OPERATING_ENVIRONMENTS = 'pOperatingEnvironmentsList'
+          REPLACE_WITH_RESOURCE_ARN = 'ReplacewithResourceArn'
+          global operatingRegionList
+          global regional_ipampool_resource_name
+          global environment_specific_ipampools
+
+          def process_template(event):
+              """
+              Creates identical resources iteratively with one unique resource property
+              """
+              try:
+                fragment = event['fragment']
+                final_fragment = copy.deepcopy(fragment)
+                parameters = event['templateParameterValues']
+                resources = fragment['Resources']
+                
+                for resource_name, resource_values in resources.items():
+                  current_resource = resources[resource_name]
+                  current_resource_type = current_resource['Type']
+                  log.info('Current Resource:: ' + str(current_resource))
+                  
+                  if (current_resource_type == 'AWS::EC2::IPAM'):
+                    print ("Resource Type:", current_resource_type)
+                    if REPLICATE_FOR_MULTIPLE_REGIONS in resource_values['Properties']['OperatingRegions']:
+                        log.info('Resource_name:: ' + str(resource_name))
+                        log.info('Resource_value:: ' + str(resource_values))
+            
+                        # Move to a different block
+                        for key, value in resource_values['Properties']['OperatingRegions'][REPLICATE_FOR_MULTIPLE_REGIONS].items():
+                            parameter_value = str(value)
+                            operatingregion = parameters[parameter_value].split(',')
+                            print('OperatingRegions: ', operatingregion)
+                            resource_properties = []
+                            for x in operatingregion:
+                              parameter_value=x
+                              dict = { str(key):parameter_value}
+                              resource_properties.append(dict)
+                            log.info('New Properties:: {} '.format(str(resource_properties)))
+            
+                            #Pop the REPLICATE_FOR_MULTIPLE_REGIONS
+                            resource_values['Properties']['OperatingRegions'].pop(REPLICATE_FOR_MULTIPLE_REGIONS)
+                            log.info('Resource_value:: {} '.format(str(resource_values)))
+                            length_resource_properties = len(resource_properties)
+                            log.info('length of properties:: ' + str(length_resource_properties))
+            
+                            # Duplicating resources with unique property values
+                            if length_resource_properties > 0:
+                              final_fragment['Resources'][resource_name] = copy.deepcopy(current_resource)
+                              for x in range(0, length_resource_properties):
+                                final_fragment['Resources'][resource_name]['Properties']['OperatingRegions'] = resource_properties
+                                
+                  elif (current_resource_type == 'AWS::EC2::IPAMPool'):
+                    print('Current Resource:', current_resource_type)
+                    if REPLICATE_FOR_MULTIPLE_REGIONS in resource_values['Properties']['ProvisionedCidrs']:
+                        log.info('Resource_name:: ' + str(resource_name))
+                        log.info('Resource_value:: ' + str(resource_values))
+                        regional_ipampool_resource_name = str(resource_name)
+            
+                        # Move to a different block
+                        for key, value in resource_values['Properties'][REPLICATE_FOR_MULTIPLE_REGIONS].items():
+                          parameter_value = str(value)
+                          operatingRegionList = parameters[parameter_value].split(',')
+                          print('OperatingRegionList: ', operatingRegionList)
+                          
+                          #Pop the REPLICATE_FOR_MULTIPLE_REGIONS
+                          resource_values['Properties'].pop(REPLICATE_FOR_MULTIPLE_REGIONS)
+                          log.info('Resource_value:: {} '.format(str(resource_values)))
+                          
+                        for key, value in resource_values['Properties']['ProvisionedCidrs'][REPLICATE_FOR_MULTIPLE_REGIONS][0].items():
+                          parameter_value = str(value)
+                          regionalpoolcidr = parameters[parameter_value].split(',')
+                          print('RegionalPoolCidr: ', regionalpoolcidr)
+                          resource_properties = []
+                          for x in regionalpoolcidr:
+                            parameter_value=x
+                            dict = { str(key):parameter_value}
+                            resource_properties.append(dict)
+                          log.info('New Properties:: {} '.format(str(resource_properties)))
+
+                          #Pop the REPLICATE_FOR_MULTIPLE_REGIONS
+                          resource_values['Properties']['ProvisionedCidrs'].pop(REPLICATE_FOR_MULTIPLE_REGIONS)
+                          log.info('Resource_value:: {} '.format(str(resource_values)))
+                          length_resource_properties = len(resource_properties)
+                          log.info('length of properties:: ' + str(length_resource_properties))
+
+                          # Duplicating resources with unique property values
+                          if length_resource_properties > 0:
+                            for x in range(0, length_resource_properties):
+                              final_fragment['Resources'][resource_name + str(x+1)] = copy.deepcopy(current_resource)
+                              final_fragment['Resources'][resource_name + str(x+1)]['Properties']['ProvisionedCidrs'] = [resource_properties[x]]
+                              final_fragment['Resources'][resource_name + str(x+1)]['Properties']['Locale'] = operatingRegionList[x]
+                              final_fragment['Resources'][resource_name + str(x+1)]['Properties']['Description'] = str('Regional IPAM Pool ') + str(operatingRegionList[x])
+                            final_fragment['Resources'].pop(resource_name)
+                            
+                    elif REGIONAL_POOL_ID in resource_values['Properties']:
+                        log.info('Resource_name:: ' + str(resource_name))
+                        log.info('Resource_value:: ' + str(resource_values))
+
+                        #Pop the REPLACE_WITH_LOCALE
+                        resource_values['Properties'].pop(REPLACE_WITH_LOCALE)
+                        log.info('Resource_value:: {} '.format(str(resource_values)))
+
+                        # OPERATING_ENVIRONMENTS 
+                        operatingEnviornmentsList = parameters[OPERATING_ENVIRONMENTS].split(',')
+                        print('operatingEnviornmentsList: ', operatingEnviornmentsList)
+                        
+                        resource_values['Properties'].pop(REGIONAL_POOL_ID)
+                        
+                        for key, value in resource_values['Properties']['ProvisionedCidrs'][REPLICATE_FOR_MULTIPLE_ENVIRONMENTS][0].items():
+                          y = 0
+                          environment_specific_ipampools = []
+                          #Pop the REPLICATE_FOR_MULTIPLE_REGIONS
+                          resource_values['Properties']['ProvisionedCidrs'].pop(REPLICATE_FOR_MULTIPLE_ENVIRONMENTS)
+                          log.info('Resource_value:: {} '.format(str(resource_values)))
+                          
+                          for env in operatingEnviornmentsList:
+                            parameter_value = str(value) + str(env)
+                            envpoolcidr = parameters[parameter_value].split(',')
+                            resource_properties = []
+                            for x in envpoolcidr:
+                              parameter_value=x
+                              dict = { str(key):parameter_value}
+                              resource_properties.append(dict)
+                            log.info('New Properties:: {} '.format(str(resource_properties)))
+
+                            length_resource_properties = len(resource_properties)
+                            log.info('length of properties:: ' + str(length_resource_properties))
+                            
+                            # Duplicating resources with unique property values
+                            if length_resource_properties > 0:
+                              for x in range(0, length_resource_properties):
+                                environment_specific_ipampools.append(resource_name + env + str(x+1))
+                                final_fragment['Resources'][resource_name + env + str(x+1)] = copy.deepcopy(current_resource)
+                                final_fragment['Resources'][resource_name + env + str(x+1)]['Properties']['ProvisionedCidrs'] = [resource_properties[x]]
+                                final_fragment['Resources'][resource_name + env + str(x+1)]['Properties']['Locale'] = operatingRegionList[x]
+                                final_fragment['Resources'][resource_name + env + str(x+1)]['Properties']['Description'] = str(env) + str(' IPAM Pool ')
+                                final_fragment['Resources'][resource_name + env + str(x+1)]['Properties']['SourceIpamPoolId'] = {str('Ref'): regional_ipampool_resource_name + str(x+1)}
+                              # final_fragment['Resources'].pop(resource_name)
+                            y = y + 1
+                            print (environment_specific_ipampools)
+                        final_fragment['Resources'].pop(resource_name)
+                
+                  elif (current_resource_type == 'AWS::RAM::ResourceShare'):
+                    print('Current Resource:', current_resource_type)
+                    if REPLACE_WITH_RESOURCE_ARN in resource_values['Properties']['ResourceArns']:
+                      log.info('Resource_name:: ' + str(resource_name))
+                      log.info('Resource_value:: ' + str(resource_values))
+                    
+                      #Pop the REPLACE_WITH_RESOURCE_ARN
+                      resource_values['Properties']['ResourceArns'].pop(REPLACE_WITH_RESOURCE_ARN)
+                      log.info('Resource_value:: {} '.format(str(resource_values)))
+                      
+                      if (len(environment_specific_ipampools)) > 0:
+                        for x in range(0, len(environment_specific_ipampools)):
+                          final_fragment['Resources'][environment_specific_ipampools[x] + str('ResourceShare')] = copy.deepcopy(current_resource)
+                          final_fragment['Resources'][environment_specific_ipampools[x] + str('ResourceShare')]['Properties']['ResourceArns'] =[{str('Fn::GetAtt'): [environment_specific_ipampools[x],str('Arn')]}]
+                        final_fragment['Resources'].pop(resource_name)
+                      
+                return final_fragment
+              except Exception as e:
+                log.error('Error occurred:: ' + str(e))
+
+          def handler(event, context):
+              """
+              Returns processed template back to CloudFormation
+              """
+              log.info(json.dumps(event))
+              processed_template=process_template(event)
+              log.info('Processed template' + json.dumps(processed_template))
+
+              r = {}
+              r['requestId'] = event['requestId']
+              r['status'] = 'SUCCESS'
+              r['fragment'] = processed_template
+
+              return r
+
+
+      Handler: index.handler
+      Runtime: python3.9
+      Role: !GetAtt rTransformExecutionRole.Arn
+  rTransformFunctionPermissions:
+    Type: AWS::Lambda::Permission
+    Properties:
+      Action: 'lambda:InvokeFunction'
+      FunctionName: !GetAtt rTransformFunction.Arn
+      Principal: 'cloudformation.amazonaws.com'
+  rTransform:
+    Type: AWS::CloudFormation::Macro
+    Properties:
+      Name: 'Replication-IpamRegionalPool-Macro'
+      Description: Replicates the resources based on parameters provided
+      FunctionName: !GetAtt rTransformFunction.Arn

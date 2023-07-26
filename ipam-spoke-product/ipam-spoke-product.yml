@@ -1,0 +1,265 @@
+# Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
+# SPDX-License-Identifier: MIT-0
+
+AWSTemplateFormatVersion: '2010-09-09'
+Metadata: # Metadata Section
+  AWS::CloudFormation::Interface:
+    ParameterGroups: # Parameter Groups
+    - Label: # Lambda Configuration
+        default: Configuration
+      Parameters: # Label Parameters
+      - pVpcSize
+
+Parameters:
+  pVpcSize:
+    Description: Size for the VPC
+    Type: String
+    AllowedValues:
+      - "small"
+      - "medium"
+      - "large"
+  pNumberOfAZs:
+    Description: Number of AvailabilityZones
+    Type: Number
+    MinValue: '2'
+    Default: '2'
+    MaxValue: '4'
+  IPAMRegion:
+    Description: Region of IPAM Scope
+    Type: String
+    Default: "us-west-2"
+
+
+Mappings: 
+  size:
+    small:  
+      vpccidr: 24
+      subnetbitAZ2 : 6 
+      subnetbitAZ3or4 : 5
+    medium:
+      vpccidr: 23
+      subnetbitAZ2 : 7
+      subnetbitAZ3or4 : 6
+    large:
+      vpccidr: 22
+      subnetbitAZ2 : 8
+      subnetbitAZ3or4 : 7
+      
+
+Conditions:
+  ThirdAz: !Or
+    - !Equals
+      - !Ref pNumberOfAZs
+      - '3'
+    - !Equals
+      - !Ref pNumberOfAZs
+      - '4'
+  FourthAz: !Equals
+    - !Ref pNumberOfAZs
+    - '4'
+  CreateSubnet2:
+    !Equals [!Ref pNumberOfAZs, '2']
+  vpcsmall:
+    !Equals [!Ref pVpcSize, 'small']
+
+Resources:
+  # Create a new VPC for the example
+  IPAMID:
+    Type: Custom::DescribeIpamResourceid
+    Properties:
+      ServiceToken: !GetAtt  DescribeResourceId.Arn
+      Region: !Ref "AWS::Region"
+      Shared_Resource : "IpamPool"
+      Cfct_Region: !Ref IPAMRegion
+  
+  rVpc:
+    Type: AWS::EC2::VPC
+    Properties:
+      Ipv4IpamPoolId: !GetAtt IPAMID.Data
+      Ipv4NetmaskLength: !FindInMap [size, !Ref pVpcSize, vpccidr]
+      EnableDnsSupport:  true
+      EnableDnsHostnames: true
+      Tags:
+        - Key: Name
+          Value: !Sub ${AWS::StackName}
+
+#### Get resourceid address
+  DescribeResourceIDExecutionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+        - Effect: Allow
+          Principal:
+            Service: 'lambda.amazonaws.com'
+          Action:
+          - 'sts:AssumeRole'
+      Path: '/'
+      ManagedPolicyArns:
+      - 'arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole'
+      Policies:
+      - PolicyName: root
+        PolicyDocument:
+          Statement:
+          - Effect: Allow
+            Action:
+            - ec2:DescribeIpamPools
+            - ram:ListResources
+            Resource: '*'
+
+  DescribeResourceId:
+    Type: AWS::Lambda::Function
+    Properties:
+      Handler: "index.handler"
+      Role: !GetAtt
+        - DescribeResourceIDExecutionRole
+        - Arn
+      Code:
+        ZipFile: |
+          import boto3
+          import cfnresponse
+          import json
+          import logging
+          import time
+          def get_id(region,shared_resource,cfct_region):
+            print(f" getting resource id")
+            if shared_resource == 'IpamPool':
+              ram = boto3.client('ram',region_name=cfct_region)
+              ec2= boto3.client('ec2',region_name=cfct_region)
+            else:
+              ram = boto3.client('ram', region_name=region)
+            response = ram.list_resources(
+            resourceOwner='OTHER-ACCOUNTS')
+            for i in response['resources']:
+                arn = i['arn']
+                type= i['type'].split(':')
+                if shared_resource == type[1]:
+                    ID = arn.split('/')
+                    resource_Id = ID[1]
+                    if shared_resource == 'IpamPool':
+                        ipam= ec2.describe_ipam_pools(IpamPoolIds=[resource_Id])
+                        if ipam['IpamPools'][0]['Locale'] == region:
+                            resource_Id = ipam['IpamPools'][0]['IpamPoolId']
+                            break
+            return resource_Id
+          def handler(event, context):
+              logger = logging.getLogger()
+              logger.setLevel(logging.INFO)
+              responseData = {}
+              responseStatus = cfnresponse.FAILED
+              logger.info('Received event: {}'.format(json.dumps(event)))
+              if event["RequestType"] == "Delete":
+                  responseStatus = cfnresponse.SUCCESS
+                  cfnresponse.send(event, context, responseStatus, responseData)
+              if event["RequestType"] == "Create":
+                  try:
+                      region= event["ResourceProperties"]["Region"]
+                      #shared_resource =  'IpamPool' #'IpamPool' 'TransitGateway'
+                      shared_resource =  event["ResourceProperties"]["Shared_Resource"]
+                      cfct_region = event["ResourceProperties"]["Cfct_Region"]
+                  except Exception as e:
+                      logger.info('Input Id retrival failure: {}'.format(e))
+                  try:
+                      resource_id = get_id(region,shared_resource,cfct_region)
+                      logger.info('Resource id {}'.format(resource_id))
+                  except Exception as e:
+                      #logger.info('failure retrive id {}'.format(e))
+                      print(failed)
+                  responseData['Data'] = resource_id
+                  responseStatus = cfnresponse.SUCCESS
+                  cfnresponse.send(event, context, responseStatus, responseData)
+      Runtime: python3.8
+      Timeout: 900
+
+  #Subnets
+  rPrivateSubnet1:
+    Type: AWS::EC2::Subnet
+    Properties:
+      AvailabilityZone: !Select
+        - '0'
+        - !GetAZs ''
+      CidrBlock: !If [CreateSubnet2, !Select [ 0, !Cidr [ !GetAtt rVpc.CidrBlock, 4, !FindInMap [size, !Ref pVpcSize, subnetbitAZ2]]], !Select [ 0, !Cidr [ !GetAtt rVpc.CidrBlock, 8, !FindInMap [size, !Ref pVpcSize, subnetbitAZ3or4]]]]
+      VpcId: !Ref rVpc
+      Tags:
+        - Key: Name
+          Value: !Sub "App-subnet-1-${AWS::StackName}"
+ 
+  rPrivateSubnet2:
+    Type: AWS::EC2::Subnet
+    Properties:
+      AvailabilityZone: !Select
+        - '1'
+        - !GetAZs ''
+      CidrBlock: !If [CreateSubnet2, !Select [ 1, !Cidr [ !GetAtt rVpc.CidrBlock, 4, !FindInMap [size, !Ref pVpcSize, subnetbitAZ2]]], !Select [ 1, !Cidr [ !GetAtt rVpc.CidrBlock, 8, !FindInMap [size, !Ref pVpcSize, subnetbitAZ3or4]]]]
+      VpcId: !Ref rVpc
+      Tags:
+        - Key: Name
+          Value: !Sub "App-subnet-2-${AWS::StackName}"
+
+  rPrivateSubnet3:
+    Type: AWS::EC2::Subnet
+    Condition: ThirdAz
+    Properties:
+      AvailabilityZone: !Select
+        - '2'
+        - !GetAZs ''
+      CidrBlock: !Select [ 2, !Cidr [ !GetAtt rVpc.CidrBlock, 8, !FindInMap [size, !Ref pVpcSize, subnetbitAZ3or4]]]
+      VpcId: !Ref rVpc
+      Tags:
+        - Key: Name
+          Value: !Sub "App-subnet-3-${AWS::StackName}"
+
+  rPrivateSubnet4:
+    Type: AWS::EC2::Subnet
+    Condition: FourthAz
+    Properties:
+      AvailabilityZone: !Select
+        - '3'
+        - !GetAZs ''
+      CidrBlock: !Select [ 3, !Cidr [ !GetAtt rVpc.CidrBlock, 8, !FindInMap [size, !Ref pVpcSize, subnetbitAZ3or4]]]
+      VpcId: !Ref rVpc
+      Tags:
+        - Key: Name
+          Value: !Sub "App-subnet-4-${AWS::StackName}"
+
+  rPrivateRouteTable:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      VpcId: !Ref rVpc
+      Tags:
+        - Key: "Name"
+          Value: "PrivateRouteTable"
+
+  #attach route table to Subnets
+
+  #Private
+  rSubnetPrivate1RouteTableAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref rPrivateSubnet1
+      RouteTableId: !Ref rPrivateRouteTable
+
+  rSubnetPrivate2RouteTableAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref rPrivateSubnet2
+      RouteTableId: !Ref rPrivateRouteTable
+
+  rSubnetPrivate3RouteTableAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Condition: ThirdAz
+    Properties:
+      SubnetId: !Ref rPrivateSubnet3
+      RouteTableId: !Ref rPrivateRouteTable
+
+  rSubnetPrivate4RouteTableAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Condition: FourthAz
+    Properties:
+      SubnetId: !Ref rPrivateSubnet4
+      RouteTableId: !Ref rPrivateRouteTable
+
+Outputs:
+  ovpcid:
+    Value: !Ref rVpc
