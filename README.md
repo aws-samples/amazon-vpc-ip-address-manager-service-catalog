@@ -1,4 +1,4 @@
-## Flexible IP Address Management Solution for AWS Control Tower
+## Deploying Amazon VPC IP Address Manager (IPAM) using AWS Service Catalog
 
 ## Solution overview
 
@@ -20,7 +20,7 @@ Step 2 – Enable trusted access for AWS Service Catalog in Organizations
 
 Step 3 – Deploy the Service Catalog Portfolios using CloudFormation
 
-### Phase 2: Setup user access and provision the above created IPAM products using AWS Service Catalog ** 
+### Phase 2: Setup user access and provision the above created IPAM products using AWS Service Catalog
 
 Step 1 – Delegate an IPAM Administrator Account using the Delegate IPAM Product in your Management Account
 
